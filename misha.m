@@ -1,137 +1,233 @@
-%% Updated MTF Script with Spatial Frequency Cutoff and Pixels/Cycle Plot
-clc;
+%% Clear Workspace and Define Sensor Parameters
+clc; clear; close all;
 
-% Sensor parameters (example values; update with actual sensor specs)
-sensorWidth_mm = 10;  % Sensor width in mm
-resolution_px = 5472;  % Horizontal resolution in pixels
-pixelPitch_mm = sensorWidth_mm / resolution_px;  % Pixel pitch in mm/pixel
+sensorWidth_mm = 9;  
+resolution_px = 5000;  
+pixelPitch_mm = sensorWidth_mm / resolution_px;  
 
-% Cutoff frequencies
-cutoff_freq_mm = 100;  % Maximum frequency to display (cycles/mm)
-cutoff_freq_px = 0.3; % Maximum frequency to display (cycles/pixel)
+cutoff_freq_mm = 500;  
+cutoff_freq_px = 0.5;  
 
-%% Part 1: Select around 10 image files for 10 different bands
-[f1, p1] = uigetfile('*.*', 'Select 10 image files', 'MultiSelect', 'on');
+%% Select Image Files
+[f1, p1] = uigetfile('*.*', 'Select all image files', 'MultiSelect', 'on');
+
 if ischar(f1)
-    f1 = {f1}; % In case only 1 file
+    f1 = {f1};
 end
+
 amount_images = length(f1);
+sym = {'m', 'k', 'b', ':k', '--r', '--g', '--b', '-m', '-c'};
 
-% Symbol colors for pixels/inch setting for each file
-dx = zeros(1, amount_images);
-sym = [{'r'} {'g'} {'b'} {'k'} {'--r'} {'--g'} {'--b'} {':k'} {'-m'} {'-c'} {'-y'} ...
-       {'--m'} {'--c'} {'--y'} {':m'} {':c'} {':y'} {'-.r'} {'-.g'} {'-.b'} {'-.k'} ...
-       {'-.m'} {'-.c'} {'-.y'} {'r-o'} {'g-s'} {'b-d'} {'k-^'} {'m-v'} {'c-p'} {'y-*'} ...
-       {'--r-o'} {'--g-s'} {'--b-d'} {'--k-^'} {'--m-v'} {'--c-p'} {'--y-*'} {':r-o'} ...
-       {':g-s'} {':b-d'} {':k-^'} {':m-v'} {':c-p'} {':y-*'} {'-.r-o'} {'-.g-s'} {'-.b-d'} ...
-       {'-.k-^'} {'-.m-v'} {'-.c-p'} {'-.y-*'}];
-
-%% Placeholder for Crop Region
-manualCropRegion = [];  % Will store the cropping region selected for the first image
-
-%% Initialize Plots
-figure;
-tiledlayout(1, 2);  % Create a side-by-side layout for the plots (remove the third plot)
-nexttile; hold on;  % First tile for cycles/mm
-legendTitles_mm = {};  % Band info for cycles/mm
-
-nexttile; hold on;  % Second tile for cycles/pixel
-legendTitles_px = {};  % Band info for cycles/pixel
-
-%% Updated MTF Computation with Slant Edge Method
+%% Crop All Images Once
+cropRegions = cell(amount_images, 1);
 for ii = 1:amount_images
-    % Extract wavelength from the filename
-    wavelength = NaN;  
-    try
-        parts = split(f1{ii}, '-');  
-        wavelengthStr = split(parts{end}, '.');
-        wavelength = str2double(wavelengthStr{1});  % Convert to numeric
-    catch
-        disp(['Error extracting wavelength from filename: ', f1{ii}]);
-    end
-    
-    % Reading in image
     img = imread(fullfile(p1, f1{ii}));
-    if size(img, 3) > 1
-        img = rgb2gray(img);  
-    end
-    
-    % For the first image, let the user select the cropping region
-    if ii == 1
-        figure, imshow(img, []), title('Select a cropping region and double-click to confirm');
-        manualCropRegion = round(getrect);  % Get user-defined cropping region
-        close;
-    end
-    
-    % Crop using the manualCropRegion
-    croppedImg = imcrop(img, manualCropRegion);
-    if isempty(croppedImg)
-        error('Cropped image is empty. Check the cropping region or image data.');
-    end
-    
-    % Compute Edge Spread Function (ESF)
-    esf = mean(croppedImg, 1);  % Average intensity across rows to create 1D ESF
-    
-    % Compute the Line Spread Function (LSF)
-    lsf = diff(esf);  % Derivative of ESF
-    
-    % Compute MTF
-    mtf = abs(fft(lsf));
-    mtf = mtf(1:floor(numel(mtf)/2));  % Positive frequencies only
-    freq_px = linspace(0, 0.5, numel(mtf));  % Normalized frequency (cycles/pixel)
-    freq_mm = freq_px / pixelPitch_mm;  % Convert to cycles/mm
-    freq_pc = 1 ./ freq_px;  % Convert to pixels/cycle
-    freq_pc(freq_px == 0) = Inf;  % Handle division by zero
+    figure, imshow(img, []), title(['Select cropping region for image ', num2str(ii), ' and double-click']);
+    cropRegion = round(getrect);
+    close;
+    cropRegions{ii} = cropRegion;
+end
 
-    % Normalize MTF
-    if max(mtf) > 0
-        mtf = mtf / max(mtf);
+%% Initialize MTF Plots
+figure;
+tiledlayout(1, 2);
+
+nexttile; hold on;
+legendTitles_mm = {};
+
+nexttile; hold on;
+legendTitles_px = {};
+
+%% Compute and Plot MTFs
+for ii = 1:amount_images
+    img = imread(fullfile(p1, f1{ii}));
+    croppedImg = imcrop(img, cropRegions{ii});
+
+    camera_height = NaN;
+    try
+        parts = split(f1{ii}, '_');
+        if numel(parts) > 1
+            heightStr = strrep(parts{1}, 'cm', '');
+            camera_height = str2double(heightStr);
+        end
+    catch
+        disp(['Warning: Could not extract camera height for file: ', f1{ii}]);
     end
-    
-    % Apply cutoff for cycles/mm
+
+    esf = mean(croppedImg, 1);
+    lsf = diff(esf);
+    mtf = abs(fft(lsf, 2^nextpow2(length(lsf))));
+    mtf = mtf / max(mtf);
+    mtf = mtf(1:floor(numel(mtf)/2));
+
+    sigma = 1;
+    mtf_smooth = imgaussfilt(mtf, sigma);
+
+    freq_px = linspace(0,0.5,numel(mtf_smooth));
+    freq_mm = freq_px / pixelPitch_mm;
+
     valid_idx_mm = freq_mm <= cutoff_freq_mm;
     freq_mm = freq_mm(valid_idx_mm);
-    mtf_mm = mtf(valid_idx_mm);
-    
-    % Apply cutoff for cycles/pixel
+    mtf_mm = mtf_smooth(valid_idx_mm);
+
     valid_idx_px = freq_px <= cutoff_freq_px;
     freq_px = freq_px(valid_idx_px);
-    mtf_px = mtf(valid_idx_px);
+    mtf_px = mtf_smooth(valid_idx_px);
 
-    % Apply cutoff for pixels/cycle
-    valid_idx_pc = freq_pc <= (1 / cutoff_freq_px) & freq_pc ~= Inf;
-    freq_pc = freq_pc(valid_idx_pc);
-    mtf_pc = mtf(valid_idx_pc);
-    
-    % Plot MTF in cycles/mm
-    nexttile(1);  % Switch to the first tile
     markerIdx = mod(ii-1, numel(sym)) + 1;
-    plot(freq_mm, mtf_mm, sym{markerIdx}, 'DisplayName', [num2str(wavelength), ' nm']);
-    legendTitles_mm{end+1} = [num2str(wavelength), ' nm'];
-    
-    % Plot MTF in cycles/pixel
-    nexttile(2);  % Switch to the second tile
-    plot(freq_px, mtf_px, sym{markerIdx}, 'DisplayName', [num2str(wavelength), ' nm']);
-    legendTitles_px{end+1} = [num2str(wavelength), ' nm'];
+
+    plot(freq_px, mtf_px, sym{markerIdx}, 'DisplayName', [num2str(camera_height), ' cm']);
+    legendTitles_px{end+1} = [num2str(camera_height), ' cm'];
 end
 
-%% Finalize Plots
-% Cycles/mm Plot
+%% Finalize MTF Plots
 nexttile(1);
 xlabel('Frequency (cycles/mm)');
 ylabel('MTF');
-title('Slant Edge MTF Analysis (Cycles/mm)');
-legend(legendTitles_mm, 'Location', 'northeast');
-grid on;
-axis([0 cutoff_freq_mm 0 1]);  % Adjust axis limits
+title('Slant Edge MTF (Cycles/mm)');
+legend(legendTitles_mm, 'Location', 'bestoutside');
+grid on; xlim([0 cutoff_freq_mm]); ylim([0 1]);
 
-% Cycles/pixel Plot
 nexttile(2);
 xlabel('Frequency (cycles/pixel)');
 ylabel('MTF');
-title('Slant Edge MTF Analysis (Cycles/pixel)');
-legend(legendTitles_px, 'Location', 'northeast');
-grid on;
-axis([0 cutoff_freq_px 0 1]);  % Adjust axis limits
-
+title('Slant Edge MTF (Cycles/pixel)');
+legend(legendTitles_px, 'Location', 'bestoutside');
+grid on; xlim([0 cutoff_freq_px]); ylim([0 1]);
 hold off;
+
+%% Create LUT: Camera Height vs MTF Contrast Values
+LUT = [];
+
+for ii = 1:amount_images
+    img = imread(fullfile(p1, f1{ii}));
+    croppedImg = imcrop(img, cropRegions{ii});
+
+    parts = regexp(f1{ii}, '\d+', 'match');
+    if ~isempty(parts)
+        camera_height = str2double(parts{1});
+    else
+        disp(['Warning: Could not extract camera height for file: ', f1{ii}]);
+        continue;
+    end
+
+    esf = mean(croppedImg, 1);
+    lsf = diff(esf);
+    mtf = abs(fft(lsf, 2^nextpow2(length(lsf))));
+    mtf = mtf / max(mtf);
+    mtf = mtf(1:floor(numel(mtf)/2));
+
+    mtf_smooth = imgaussfilt(mtf, sigma);
+    freq_px = linspace(0,0.5,numel(mtf_smooth));
+
+    target_freq_px = [0, 0.25, 0.5, 1];
+    contrast_values = NaN(1, length(target_freq_px));
+
+    for jj = 1:length(target_freq_px)
+        [~, idx] = min(abs(freq_px - target_freq_px(jj)));
+        contrast_values(jj) = mtf_smooth(idx);
+    end
+
+    LUT = [LUT; camera_height, contrast_values];
+end
+
+LUT = sortrows(LUT, 1);
+
+disp('Camera Height (cm) vs. MTF Contrast at 0, 0.25, 0.5, and 1 cycles/pixel');
+disp(array2table(LUT, 'VariableNames', {'Camera_Height_cm', 'Contrast_0', 'Contrast_0_25', 'Contrast_0_5', 'Contrast_1'}));
+
+%% Save LUT to CSV
+outputFileName = 'LUT_CameraHeight_Contrast.csv';
+outputFolder = uigetdir('', 'Select Folder to Save LUT');
+if outputFolder ~= 0
+    outputFilePath = fullfile(outputFolder, outputFileName);
+    writetable(array2table(LUT, 'VariableNames', {'Camera_Height_cm', 'Contrast_0', 'Contrast_0_25', 'Contrast_0_5', 'Contrast_1'}), outputFilePath);
+    disp(['LUT saved to: ', outputFilePath]);
+else
+    disp('Save operation canceled.');
+end
+
+%% Plot Contrast vs Camera Height
+figure;
+hold on;
+plot(LUT(:,1), LUT(:,2), 'bo-', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'MTF at 0 cycles/px');
+plot(LUT(:,1), LUT(:,3), 'go-', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'MTF at 0.25 cycles/px');
+plot(LUT(:,1), LUT(:,4), 'ro-', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'MTF at 0.5 cycles/px');
+plot(LUT(:,1), LUT(:,5), 'ko-', 'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', 'MTF at 1 cycle/px');
+xlabel('Camera Height (cm)');
+ylabel('MTF Contrast');
+title('MTF Contrast vs. Camera Height');
+legend('Location', 'bestoutside');
+grid on;
+hold off;
+
+%% Mean MTF vs Camera Height with Polynomial Fit
+meanMTF_perImage = [];
+
+for ii = 1:amount_images
+    img = imread(fullfile(p1, f1{ii}));
+    croppedImg = imcrop(img, cropRegions{ii});
+
+    parts = regexp(f1{ii}, '\d+', 'match');
+    camera_height = NaN;
+    if ~isempty(parts)
+        camera_height = str2double(parts{1});
+    else
+        disp(['Warning: Could not extract camera height for file: ', f1{ii}]);
+        continue;
+    end
+
+    esf = mean(croppedImg, 1);
+    lsf = diff(esf);
+
+    mtf = abs(fft(lsf, 2^nextpow2(length(lsf))));
+    mtf = mtf / max(mtf);
+    mtf = mtf(1:floor(numel(mtf)/2));
+
+    mtf_smooth = imgaussfilt(mtf, 1);
+    freq_px = linspace(0,0.5,numel(mtf_smooth));
+
+    valid_idx = freq_px <= 1;
+    freq_px = freq_px(valid_idx);
+    mtf_smooth = mtf_smooth(valid_idx);
+
+    mean_mtf = mean(mtf_smooth);
+    meanMTF_perImage = [meanMTF_perImage; camera_height, mean_mtf];
+end
+
+meanMTF_perImage = sortrows(meanMTF_perImage, 1);
+heights = meanMTF_perImage(:,1);
+mean_MTFs = meanMTF_perImage(:,2);
+
+p = polyfit(heights, mean_MTFs, 3);
+[R, Pval] = corr(heights, mean_MTFs);
+
+figure;
+plot(heights, mean_MTFs, 'ko-', 'LineWidth', 2, 'MarkerFaceColor', 'k');
+hold on;
+plot(heights, polyval(p, heights), 'r--', 'LineWidth', 2);
+xlabel('Camera Height (cm)');
+ylabel('Mean MTF (0-1 cycles/pixel)');
+title('Mean MTF vs Camera Height (Polynomial Fit)');
+legend('Data', 'Cubic Polynomial Fit', 'Location', 'best');
+grid on;
+
+disp(['Polynomial fit coefficients: ', num2str(p)]);
+disp(['Correlation R = ', num2str(R), ', p-value = ', num2str(Pval)]);
+
+if (Pval < 0.05)
+    disp('There is a statistically significant correlation.');
+else
+    disp('No statistically significant relationship detected.');
+end
+
+%% Polynomial Regression and Correlation per Frequency
+freq_labels = {'0', '0.25', '0.5', '1'};
+
+fprintf('\nPolynomial Regression and Correlation Analysis Results:\n');
+
+for i = 2:size(LUT,2)
+    coeffs = polyfit(LUT(:,1), LUT(:,i), 3);
+    y_fit = polyval(coeffs, LUT(:,1));
+    % (Continue with correlation analysis or plotting if needed)
+end
